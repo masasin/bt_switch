@@ -67,6 +67,49 @@ default_device = "headphones"
 default_target = "laptop"
 ```
 
+## Managing Configuration
+
+You can manage your configuration directly from the CLI. These commands maintain your comments and formatting in the TOML file.
+
+### Devices
+
+```bash
+# List all configured devices
+bt-switch devices list
+
+# Add a new device
+bt-switch devices add headphones --mac 00:11:22:33:44:55 --name "Sony XM4"
+
+# Remove a device
+bt-switch devices remove headphones
+```
+
+### Hosts
+
+```bash
+# List all configured hosts
+bt-switch hosts list
+
+# Add a new host
+bt-switch hosts add desktop --address 192.168.1.50 --user jean
+
+# Remove a host
+bt-switch hosts remove desktop
+```
+
+### Defaults
+
+```bash
+# List all default settings
+bt-switch defaults list
+
+# Set defaults for a specific hostname
+bt-switch defaults set my-laptop --device headphones --target desktop
+
+# Remove defaults
+bt-switch defaults remove my-laptop
+```
+
 ## Usage
 
 Run the tool without arguments to use your hostname's defaults:

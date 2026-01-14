@@ -4,8 +4,13 @@ from pydantic import ValidationError
 from .exceptions import ConfigurationError
 from .models import AppConfig
 
+from pathlib import Path
+
+def get_config_path() -> Path:
+    return user_config_path("bt_switch") / "config.toml"
+
 def load_config() -> AppConfig:
-    config_path = user_config_path("bt_switch") / "config.toml"
+    config_path = get_config_path()
     if not config_path.exists():
         raise ConfigurationError(f"Config not found at {config_path}")
     
