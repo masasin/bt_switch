@@ -183,5 +183,12 @@ def entry_point(target: str | None = None, device: str | None = None):
         logger.exception("Unexpected error")
         sys.exit(1)
 
+@app.command(name="tui")
+def tui():
+    """Launch the Terminal User Interface."""
+    from .tui import BtSwitchApp
+    app = BtSwitchApp()
+    app.run()
+
 if __name__ == "__main__":
     app()
