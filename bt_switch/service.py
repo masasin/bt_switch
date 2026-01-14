@@ -1,7 +1,9 @@
 from loguru import logger
-from .exceptions import ExecutionError
+
 from .driver import BluetoothDriver
+from .exceptions import ExecutionError
 from .models import Device
+
 
 class SwitchService:
     def __init__(self, local_driver: BluetoothDriver, remote_driver: BluetoothDriver, device: Device, target_name: str):

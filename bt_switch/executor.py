@@ -2,8 +2,10 @@ import abc
 import os
 import shlex
 import subprocess
+
 from .exceptions import ExecutionError
 from .models import Host
+
 
 class Executor(abc.ABC):
     @abc.abstractmethod

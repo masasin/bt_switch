@@ -78,8 +78,8 @@ class ConfigService:
         return result
 
     def add_host(
-        self, 
-        alias: str, 
+        self,
+        alias: str,
         *, 
         address: str, 
         user: str, 

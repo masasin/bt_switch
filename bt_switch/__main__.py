@@ -4,7 +4,7 @@ import sys
 from cyclopts import App
 from loguru import logger
 
-from .config import load_config, get_config_path
+from .config import get_config_path, load_config
 from .config_service import ConfigService
 from .driver import DriverFactory
 from .exceptions import BtSwitchError, ConfigurationError
@@ -179,7 +179,7 @@ def entry_point(target: str | None = None, device: str | None = None):
     except BtSwitchError as e:
         logger.error(str(e))
         sys.exit(1)
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         sys.exit(1)
 

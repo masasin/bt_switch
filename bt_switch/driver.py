@@ -1,7 +1,9 @@
 import abc
-from .exceptions import ExecutionError, ConfigurationError
+
+from .exceptions import ConfigurationError, ExecutionError
 from .executor import Executor, LocalExecutor, SshExecutor
 from .models import Host
+
 
 class BluetoothDriver(abc.ABC):
     def __init__(self, executor: Executor):

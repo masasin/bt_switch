@@ -1,8 +1,11 @@
 from unittest.mock import Mock
+
 import pytest
+
 from bt_switch.driver import BluezDriver, DriverFactory
 from bt_switch.exceptions import ConfigurationError, ExecutionError
 from bt_switch.models import Host
+
 
 @pytest.fixture
 def mock_executor():

@@ -1,10 +1,12 @@
 import tomllib
+from pathlib import Path
+
 from platformdirs import user_config_path
 from pydantic import ValidationError
+
 from .exceptions import ConfigurationError
 from .models import AppConfig
 
-from pathlib import Path
 
 def get_config_path() -> Path:
     return user_config_path("bt_switch") / "config.toml"

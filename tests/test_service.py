@@ -1,8 +1,11 @@
 from unittest.mock import Mock
+
 import pytest
+
 from bt_switch.exceptions import ExecutionError
 from bt_switch.models import Device
 from bt_switch.service import SwitchService
+
 
 @pytest.fixture
 def mock_driver():

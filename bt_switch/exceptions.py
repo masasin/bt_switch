@@ -1,5 +1,6 @@
 import shlex
 
+
 class BtSwitchError(Exception):
     pass
 

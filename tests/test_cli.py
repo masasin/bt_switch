@@ -1,7 +1,6 @@
-from unittest.mock import Mock
-import pytest
 from bt_switch.__main__ import entry_point
 from bt_switch.exceptions import ConfigurationError
+
 
 def test_entry_point_config_error(mocker):
     # Mock load_config to raise

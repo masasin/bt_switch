@@ -1,5 +1,7 @@
 import pytest
+
 from bt_switch.models import AppConfig, DefaultSettings, Device, Host
+
 
 @pytest.fixture
 def mock_subprocess(mocker):

@@ -1,6 +1,8 @@
-from pydantic import ValidationError
 import pytest
-from bt_switch.models import Device, Host, DefaultSettings, AppConfig
+from pydantic import ValidationError
+
+from bt_switch.models import AppConfig, Device, Host
+
 
 def test_device_model_valid():
     d = Device(mac="00:00:00:00:00:00", name="Test Device")

@@ -1,8 +1,11 @@
 import subprocess
+
 import pytest
+
 from bt_switch.exceptions import ExecutionError
 from bt_switch.executor import LocalExecutor, SshExecutor
 from bt_switch.models import Host
+
 
 def test_local_executor_success(mock_subprocess):
     mock_subprocess.return_value.stdout = "output\n"

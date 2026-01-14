@@ -1,6 +1,8 @@
 import pytest
+
 from bt_switch.config import load_config
 from bt_switch.exceptions import ConfigurationError
+
 
 def test_load_config_not_found(mocker, tmp_path):
     mocker.patch("bt_switch.config.user_config_path", return_value=tmp_path / "nonexistent")
