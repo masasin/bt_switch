@@ -94,3 +94,33 @@ async def test_remove_default_flow(mock_config_service):
         await pilot.pause()
         
         mock_config_service.remove_default.assert_called_with("some-host")
+
+@pytest.mark.asyncio
+async def test_add_default_group_flow(mock_config_service):
+    # Mock groups existing
+    mock_config_service.list_groups.return_value = {"my-group": ["d1", "d2"]}
+    
+    app = BtSwitchApp()
+    app.config_service = mock_config_service
+    
+    async with app.run_test() as pilot:
+        tabs = app.query_one("TabbedContent")
+        tabs.active = "tab-defaults"
+        await pilot.pause()
+        
+        await pilot.click("#defaults-add")
+        await pilot.pause()
+        
+        # Select group from device dropdown
+        app.screen.query_one("#select-device", Select).value = "my-group"
+        app.screen.query_one("#select-target", Select).value = "host-alias"
+        
+        await pilot.click("#btn-submit")
+        await pilot.pause()
+        await pilot.pause()
+        
+        mock_config_service.set_default.assert_called_with(
+            socket.gethostname(), 
+            default_device="my-group", 
+            default_target="host-alias"
+        )

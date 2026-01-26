@@ -59,6 +59,10 @@ class ConfigService:
         groups = self._ensure_table(doc, "groups")
         if alias in groups:
              raise ConfigurationError(f"Group '{alias}' already exists")
+        
+        # Check if alias exists as a device
+        if alias in devices:
+            raise ConfigurationError(f"Device '{alias}' already exists")
 
         groups[alias] = device_aliases
         self._save_document(doc)
@@ -88,6 +92,11 @@ class ConfigService:
         
         if alias in devices:
             raise ConfigurationError(f"Device '{alias}' already exists")
+        
+        # Check if alias exists as a group
+        groups = doc.get("groups", {})
+        if alias in groups:
+             raise ConfigurationError(f"Group '{alias}' already exists")
 
         device_table = tomlkit.inline_table()
         device_table.update({"mac": mac, "name": name})
@@ -170,7 +179,10 @@ class ConfigService:
         hosts = doc.get("hosts", {})
         
         if default_device not in devices:
-             raise ConfigurationError(f"Device '{default_device}' not found in configuration")
+             # Check if it is a group
+             groups = doc.get("groups", {})
+             if default_device not in groups:
+                 raise ConfigurationError(f"Device or Group '{default_device}' not found in configuration")
         if default_target not in hosts:
              raise ConfigurationError(f"Host '{default_target}' not found in configuration")
 

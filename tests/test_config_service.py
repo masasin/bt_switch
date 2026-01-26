@@ -81,7 +81,7 @@ def test_set_default(service):
     assert defaults["myhost"].default_target == "h1"
 
 def test_set_default_invalid_refs(service):
-    with pytest.raises(ConfigurationError, match="Device 'd1' not found"):
+    with pytest.raises(ConfigurationError, match="Device or Group 'd1' not found"):
         service.set_default("host", default_device="d1", default_target="h1")
 
     service.add_device("d1", "aa", "n1")
@@ -113,3 +113,33 @@ def test_preserves_comments(config_file):
     assert "# This is a comment" in content
     assert "# Inline comment" in content
     assert "mac = \"bb\"" in content
+
+def test_add_device_conflict_with_group(service):
+    service.add_device("d1", "aa", "n1")
+    service.add_group("g1", ["d1"])
+    
+    with pytest.raises(ConfigurationError, match="Group 'g1' already exists"):
+        service.add_device("g1", "bb", "n2")
+
+def test_add_group_conflict_with_device(service):
+    service.add_device("d1", "aa", "n1")
+    
+    with pytest.raises(ConfigurationError, match="Device 'd1' already exists"):
+        service.add_group("d1", ["d1"])
+
+def test_set_default_with_group(service):
+    service.add_device("d1", "aa", "n1")
+    service.add_group("g1", ["d1"])
+    service.add_host("h1", address="1.1", user="u")
+    
+    # Should succeed for a group
+    service.set_default("myhost", default_device="g1", default_target="h1")
+    
+    defaults = service.list_defaults()
+    assert defaults["myhost"].default_device == "g1"
+
+def test_set_default_invalid_device_or_group(service):
+    service.add_host("h1", address="1.1", user="u")
+    with pytest.raises(ConfigurationError, match="Device or Group 'foo' not found"):
+        service.set_default("myhost", default_device="foo", default_target="h1")
+

@@ -14,6 +14,7 @@ from textual.widgets import (
     Label,
     RichLog,
     Select,
+    SelectionList,
     TabbedContent,
     TabPane,
 )
@@ -39,6 +40,11 @@ class TextualLogger:
 class DeviceSelectorMixin:
     def _refresh_devices_table(self, table: DataTable, config_service: ConfigService) -> str | None:
         table.clear(columns=True)
+        
+        show_checks = (table.id == "dashboard-devices")
+        if show_checks:
+            table.add_column("Sel", width=3)
+            
         table.add_columns("Alias", "Name", "MAC")
         table.cursor_type = "row"
         
@@ -50,14 +56,20 @@ class DeviceSelectorMixin:
         devices = config_service.list_devices()
         device_items = list(devices.items())
         default_row_index = -1
-
+        
         for i, (alias, dev) in enumerate(device_items):
             name_display = dev.name
             if default_device_alias and default_device_alias == alias:
                 name_display = f"{dev.name} [bold green](Default)[/]"
                 default_row_index = i
             
-            table.add_row(alias, name_display, dev.mac, key=alias)
+            row = [alias, name_display, dev.mac]
+            if show_checks:
+                is_selected = getattr(self, "selected_devices", set()) and alias in self.selected_devices
+                check = "[x]" if is_selected else "[ ]"
+                row.insert(0, check)
+
+            table.add_row(*row, key=alias)
 
         if default_row_index != -1:
             table.move_cursor(row=default_row_index)
@@ -76,16 +88,17 @@ class Dashboard(Container, DeviceSelectorMixin):
         self.selected_target = None
         self.selected_device = None
         self.selected_group = None
+        self.selected_devices: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="controls"):
             with Vertical(classes="column"):
-                yield Label("Devices", classes="section-title")
-                yield DataTable(id="dashboard-devices")
-            
-            with Vertical(classes="column"):
                 yield Label("Groups", classes="section-title")
                 yield Select([], id="dashboard-groups", prompt="Select Group (Optional)")
+
+            with Vertical(classes="column"):
+                yield Label("Devices", classes="section-title")
+                yield DataTable(id="dashboard-devices")
             
             with Vertical(classes="column"):
                 yield Label("Target Host", classes="section-title")
@@ -113,7 +126,14 @@ class Dashboard(Container, DeviceSelectorMixin):
 
         # Refresh Devices
         table = self.query_one("#dashboard-devices", DataTable)
-        self.selected_device = self._refresh_devices_table(table, self.config_service)
+        default_alias = self._refresh_devices_table(table, self.config_service)
+        
+        # Pre-select default device if nothing selected yet
+        if not self.selected_devices and default_alias:
+            self.selected_devices.add(default_alias)
+            self.selected_device = default_alias
+            # Re-refresh table to show checkbox
+            self._refresh_devices_table(table, self.config_service)
 
         # Refresh Groups
         group_select = self.query_one("#dashboard-groups", Select)
@@ -121,8 +141,18 @@ class Dashboard(Container, DeviceSelectorMixin):
         group_options = [(f"{alias} ({len(members)} devices)", alias) for alias, members in groups.items()]
         group_options.insert(0, ("(None)", "")) 
         group_select.set_options(group_options)
-        group_select.value = "" 
-
+        
+        # If the default is a group, handle it
+        if not self.selected_target and local_defaults and local_defaults.default_device in groups:
+             group_alias = local_defaults.default_device
+             group_select.value = group_alias
+             self.selected_group = group_alias
+             self.selected_device = group_alias
+             self.selected_devices = set(groups[group_alias])
+             self._refresh_devices_table(table, self.config_service)
+        else:
+             group_select.value = Select.BLANK 
+             self.selected_group = None
         # Refresh Hosts
         select = self.query_one("#target-select", Select)
         hosts = self.config_service.list_hosts()
@@ -134,10 +164,24 @@ class Dashboard(Container, DeviceSelectorMixin):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         if event.data_table.id == "dashboard-devices":
-            self.selected_device = event.row_key.value
-            # Deselect group if device selected
-            self.query_one("#dashboard-groups", Select).value = ""
-            self.selected_group = None
+            alias = event.row_key.value
+            
+            if alias in self.selected_devices:
+                self.selected_devices.remove(alias)
+                if self.selected_device == alias:
+                    self.selected_device = next(iter(self.selected_devices)) if self.selected_devices else None
+            else:
+                self.selected_devices.add(alias)
+                self.selected_device = alias
+            
+            # Update visual row without full refresh to preserve cursor
+            check = "[x]" if alias in self.selected_devices else "[ ]"
+            event.data_table.update_cell(event.row_key, "Sel", check)
+
+            # Deselect group in dropdown if manually interacting
+            # We don't null self.selected_group because multiple devices might still match it,
+            # but we clear the visual dropdown state.
+            self.query_one("#dashboard-groups", Select).value = Select.BLANK
 
     def on_select_changed(self, event: Select.Changed):
         if event.select.id == "target-select":
@@ -146,17 +190,34 @@ class Dashboard(Container, DeviceSelectorMixin):
             val = event.value
             if val:
                 self.selected_group = val
-                self.selected_device = None
-                self.app.notify(f"Group '{val}' selected")
+                # Select all members
+                groups = self.config_service.list_groups()
+                if val in groups:
+                     self.selected_devices = set(groups[val])
+                     # Filter only existing devices?
+                     devices = self.config_service.list_devices()
+                     self.selected_devices = {d for d in self.selected_devices if d in devices}
+                
+                # Refresh table visuals
+                table = self.query_one("#dashboard-devices", DataTable)
+                self._refresh_devices_table(table, self.config_service)
             else:
                 self.selected_group = None
+                # Clear selection? Or keep manual? 
+                # "Remove the toast when a group is selected" -> Toast removed. 
+                # If clearing group, maybe clear select?
+                # User didn't specify behavior on deselect logic clearly, but implies Group Select -> Selects All.
+                # If I select None, I'll clear.
+                self.selected_devices = set()
+                table = self.query_one("#dashboard-devices", DataTable)
+                self._refresh_devices_table(table, self.config_service)
 
     @work(exclusive=True, thread=True)
     def run_switch_operation(self, operation: str):
         log = self.query_one("#logs", RichLog)
 
-        if not self.selected_device and not self.selected_group:
-            self.app.call_from_thread(log.write, "[bold red]No device or group selected![/]")
+        if not self.selected_devices:
+            self.app.call_from_thread(log.write, "[bold red]No devices selected![/]")
             return
         
         if not self.selected_target:
@@ -179,33 +240,15 @@ class Dashboard(Container, DeviceSelectorMixin):
                 is_local=False
             )
 
-            # Determine Mode (Group vs Single)
-            if self.selected_group:
-                group_alias = self.selected_group
-                self.app.call_from_thread(log.write, f"[bold blue]Starting GROUP {operation.upper()} on '{group_alias}'...[/]")
-                
-                device_aliases = config.groups[group_alias]
-                devices = []
-                for da in device_aliases:
-                    if da in config.devices:
-                        devices.append(config.devices[da])
-                
-                service = BatchSwitchService(local_driver, remote_driver, devices, target_str)
-                service.run(operation)
-                
-            else:
-                # Single Device
-                device_alias = self.selected_device
-                self.app.call_from_thread(log.write, f"[bold blue]Starting {operation.upper()} on '{device_alias}'...[/]")
-                device_obj = config.devices[device_alias]
-                service = SwitchService(local_driver, remote_driver, device_obj, target_str)
-                
-                if operation == "switch":
-                    service.run()
-                elif operation == "push":
-                    service._handle_push()
-                elif operation == "pull":
-                    service._handle_pull()
+            devices = []
+            for alias in self.selected_devices:
+                if alias in config.devices:
+                    devices.append(config.devices[alias])
+            
+            self.app.call_from_thread(log.write, f"[bold blue]Starting {operation.upper()} on {len(devices)} devices...[/]")
+            
+            service = BatchSwitchService(local_driver, remote_driver, devices, target_str)
+            service.run(operation)
 
             self.app.call_from_thread(log.write, f"[bold green]{operation.upper()} Complete![/]")
             
@@ -328,6 +371,160 @@ class HostsView(ConfigView):
              self.app.push_screen(AddHostScreen(id="add-host-screen"), hande_add)
 
 
+class AddDeviceScreen(ModalScreen):
+    CSS = """
+    AddDeviceScreen {
+        align: center middle;
+    }
+    
+    #dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: auto;
+        padding: 1 2;
+        width: 60;
+        height: auto;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    
+    #title {
+        column-span: 2;
+        height: 3;
+        width: 100%;
+        content-align: center middle;
+        text-style: bold;
+        background: $accent;
+        color: $text;
+        margin-bottom: 1;
+    }
+    
+    Label {
+        width: 100%;
+        height: 3;
+        content-align: right middle;
+    }
+    
+    Input {
+        width: 100%;
+    }
+    
+    #buttons {
+        column-span: 2;
+        height: 5;
+        align: right middle;
+        margin-top: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("Add Device", id="title"),
+            Label("Alias:"),
+            Input(placeholder="e.g. headphones", id="input-alias"),
+            Label("MAC:"),
+            Input(placeholder="e.g. AA:BB:CC:DD:EE:FF", id="input-mac"),
+            Label("Name:"),
+            Input(placeholder="e.g. Sony WH-1000XM4", id="input-name"),
+            Horizontal(
+                Button("Cancel", variant="error", id="btn-cancel"),
+                Button("Add", variant="success", id="btn-submit"),
+                id="buttons"
+            ),
+            id="dialog"
+        )
+    
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "btn-submit":
+            alias = self.query_one("#input-alias", Input).value
+            mac = self.query_one("#input-mac", Input).value
+            name = self.query_one("#input-name", Input).value
+            
+            if alias and mac and name:
+                self.dismiss((alias, mac, name))
+            else:
+                self.notify("All fields are required.", severity="error")
+                
+        elif event.button.id == "btn-cancel":
+            self.dismiss(None)
+
+class AddHostScreen(ModalScreen):
+    CSS = """
+    AddHostScreen {
+        align: center middle;
+    }
+    
+    #dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: auto;
+        padding: 1 2;
+        width: 60;
+        height: auto;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    
+    #title {
+        column-span: 2;
+        height: 3;
+        width: 100%;
+        content-align: center middle;
+        text-style: bold;
+        background: $accent;
+        color: $text;
+        margin-bottom: 1;
+    }
+    
+    Label {
+        width: 100%;
+        height: 3;
+        content-align: right middle;
+    }
+    
+    Input {
+        width: 100%;
+    }
+    
+    #buttons {
+        column-span: 2;
+        height: 5;
+        align: right middle;
+        margin-top: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("Add Host", id="title"),
+            Label("Alias:"),
+            Input(placeholder="e.g. desktop", id="input-alias"),
+            Label("Address:"),
+            Input(placeholder="e.g. 192.168.1.10 or workstation.local", id="input-address"),
+            Label("User:"),
+            Input(placeholder="e.g. jean", id="input-user"),
+            Horizontal(
+                Button("Cancel", variant="error", id="btn-cancel"),
+                Button("Add", variant="success", id="btn-submit"),
+                id="buttons"
+            ),
+            id="dialog"
+        )
+    
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "btn-submit":
+            alias = self.query_one("#input-alias", Input).value
+            address = self.query_one("#input-address", Input).value
+            user = self.query_one("#input-user", Input).value
+            
+            if alias and address and user:
+                self.dismiss((alias, address, user))
+            else:
+                self.notify("All fields are required.", severity="error")
+                
+        elif event.button.id == "btn-cancel":
+            self.dismiss(None)
+
 class AddDefaultScreen(ModalScreen):
     CSS = """
     AddDefaultScreen {
@@ -338,7 +535,7 @@ class AddDefaultScreen(ModalScreen):
         grid-size: 2;
         grid-gutter: 1 2;
         grid-rows: auto;
-        padding: 0 1;
+        padding: 1 2;
         width: 60;
         height: auto;
         border: thick $background 80%;
@@ -347,27 +544,29 @@ class AddDefaultScreen(ModalScreen):
     
     #title {
         column-span: 2;
-        height: 1;
+        height: 3;
         width: 100%;
         content-align: center middle;
         text-style: bold;
+        background: $accent;
+        color: $text;
+        margin-bottom: 1;
     }
     
     Label {
-        column-span: 1;
+        width: 100%;
         height: 3;
         content-align: right middle;
     }
     
-    Input, Select {
-        column-span: 1;
+    Select {
         width: 100%;
     }
     
     #buttons {
         column-span: 2;
-        height: auto;
-        align: right bottom;
+        height: 5;
+        align: right middle;
         margin-top: 1;
     }
     """
@@ -380,6 +579,10 @@ class AddDefaultScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         devices = self.config_service.list_devices()
         device_options = [(f"{d.name} ({alias})", alias) for alias, d in devices.items()]
+        
+        groups = self.config_service.list_groups()
+        for alias, members in groups.items():
+            device_options.append((f"{alias} (Group: {len(members)})", alias))
         
         hosts = self.config_service.list_hosts()
         host_options = [(alias, alias) for alias in hosts.keys()]
@@ -487,58 +690,77 @@ class AddGroupScreen(ModalScreen):
         grid-size: 2;
         grid-gutter: 1 2;
         grid-rows: auto;
-        padding: 0 1;
-        width: 60;
-        height: auto;
+        padding: 1 2;
+        width: 70;
+        max-height: 80vh;
         border: thick $background 80%;
         background: $surface;
     }
     
     #title {
         column-span: 2;
-        height: 1;
+        height: 3;
         width: 100%;
         content-align: center middle;
         text-style: bold;
+        background: $accent;
+        color: $text;
+        margin-bottom: 1;
     }
     
     Label {
-        column-span: 1;
+        width: 100%;
         height: 3;
         content-align: right middle;
     }
     
-    Input, Select {
-        column-span: 1;
+    Input {
         width: 100%;
+    }
+    
+    SelectionList {
+        column-span: 2;
+        height: 10;
+        border: solid $accent;
+        margin: 1 0;
     }
     
     #buttons {
         column-span: 2;
-        height: auto;
-        align: right bottom;
+        height: 5;
+        align: right middle;
         margin-top: 1;
     }
     """
 
-    def __init__(self, config_service: ConfigService, **kwargs):
+    def __init__(self, config_service: ConfigService, initial_alias: str | None = None, initial_members: list[str] | None = None, **kwargs):
         super().__init__(**kwargs)
         self.config_service = config_service
+        self.initial_alias = initial_alias
+        self.initial_members = set(initial_members) if initial_members else set()
 
     def compose(self) -> ComposeResult:
         devices = self.config_service.list_devices()
-        # Simple text input for now, as TUI multi-select is complex without custom widgets
-        # User enters comma-separated aliases
         
+        # Build selection list
+        selections = []
+        for alias, dev in devices.items():
+            label = f"{dev.name} ({alias})"
+            is_selected = alias in self.initial_members
+            selections.append((label, alias, is_selected))
+        
+        title = "Edit Group" if self.initial_alias else "Add Group"
+        btn_label = "Update" if self.initial_alias else "Add"
+
         yield Grid(
-            Label("Add Group", id="title"),
+            Label(title, id="title"),
             Label("Group Alias:"),
-            Input(placeholder="e.g. desk", id="input-alias"),
+            Input(placeholder="e.g. desk", id="input-alias", value=self.initial_alias or ""),
             Label("Devices:"),
-            Input(placeholder="dev1, dev2 (comma separated aliases)", id="input-devices"),
+            SelectionList(*selections, id="input-devices"),
             Horizontal(
                 Button("Cancel", variant="error", id="btn-cancel"),
-                Button("Add", variant="success", id="btn-submit"),
+                Button(btn_label, variant="success", id="btn-submit"),
                 id="buttons"
             ),
             id="dialog"
@@ -547,13 +769,12 @@ class AddGroupScreen(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed):
         if event.button.id == "btn-submit":
             alias = self.query_one("#input-alias", Input).value
-            devices_str = self.query_one("#input-devices", Input).value
+            selected = self.query_one("#input-devices", SelectionList).selected
             
-            if alias and devices_str:
-                device_list = [d.strip() for d in devices_str.split(",") if d.strip()]
-                self.dismiss((alias, device_list))
+            if alias and selected:
+                self.dismiss((alias, selected))
             else:
-                self.notify("All fields are required.", severity="error")
+                self.notify("Alias and at least one device are required.", severity="error")
                 
         elif event.button.id == "btn-cancel":
             self.dismiss(None)
@@ -573,6 +794,24 @@ class GroupsView(ConfigView):
         for alias, members in groups.items():
             table.add_row(alias, ", ".join(members), key=alias)
 
+    def compose_content(self) -> ComposeResult:
+        # Override to add Edit button? No, ConfigView structure is strict.
+        # I need to edit ConfigView or override compose in GroupsView.
+        # Let's override compose.
+        pass
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(self.title, classes="section-title")
+            
+            yield DataTable(id=f"{self.id_prefix}-table", cursor_type="row")
+            
+            with Horizontal(classes="buttons-row"):
+                yield Button("Refresh", id=f"{self.id_prefix}-refresh")
+                yield Button("Add", id=f"{self.id_prefix}-add", variant="primary")
+                yield Button("Edit", id=f"{self.id_prefix}-edit", variant="warning")
+                yield Button("Remove", id=f"{self.id_prefix}-remove", variant="error")
+
     def on_button_pressed(self, event: Button.Pressed):
         if event.button.id == "groups-refresh":
             self.refresh_data()
@@ -585,6 +824,53 @@ class GroupsView(ConfigView):
                     self.selected_row = None
                 except Exception as e:
                     self.notify(f"Error: {e}", severity="error")
+        elif event.button.id == "groups-edit":
+            if self.selected_row:
+                # Fetch members
+                groups = self.config_service.list_groups()
+                members = groups.get(self.selected_row, [])
+                
+                def handle_edit(result):
+                    if result:
+                        alias, devices = result
+                        try:
+                            # If alias changed, remove old and add new? 
+                            # Simplification: Don't allow alias change or handle it.
+                            # The screen allows alias edit.
+                            
+                            if alias != self.selected_row:
+                                self.config_service.add_group(alias, devices)
+                                self.config_service.remove_group(self.selected_row)
+                                self.notify(f"Group '{self.selected_row}' renamed to '{alias}' and updated")
+                            else:
+                                # Start fresh? config service doesn't have update_group. 
+                                # Remove and Re-add is safest atomic-ish op if no constraint failure.
+                                # But if we remove first, and add fails, we lost it.
+                                # If we add first, it fails "exists".
+                                # Need update_group in service? Or just Remove then Add.
+                                # Since we are in TUI, we can try to facilitate.
+                                
+                                # Hack: Remove then Add.
+                                self.config_service.remove_group(self.selected_row)
+                                try:
+                                    self.config_service.add_group(alias, devices)
+                                    self.notify(f"Group '{alias}' updated")
+                                except Exception as e_add:
+                                    # Restore?
+                                    self.config_service.add_group(self.selected_row, members) 
+                                    raise e_add
+
+                            self.refresh_data()
+                            self.selected_row = None
+                        except Exception as e:
+                            self.notify(f"Error updating group: {e}", severity="error")
+
+                self.app.push_screen(
+                    AddGroupScreen(self.config_service, initial_alias=self.selected_row, initial_members=members), 
+                    handle_edit
+                )
+            else:
+                self.notify("Please select a group to edit", severity="warning")
         elif event.button.id == "groups-add":
             def handle_add(result):
                 if result:
@@ -649,15 +935,15 @@ class BtSwitchApp(App):
             
             with TabPane("Devices", id="tab-devices"):
                 yield DevicesView(self.config_service)
+            
+            with TabPane("Groups", id="tab-groups"):
+                 yield GroupsView(self.config_service)
                 
             with TabPane("Hosts", id="tab-hosts"):
                 yield HostsView(self.config_service)
 
             with TabPane("Defaults", id="tab-defaults"):
                  yield DefaultsView(self.config_service)
-
-            with TabPane("Groups", id="tab-groups"):
-                 yield GroupsView(self.config_service)
 
         yield Footer()
 

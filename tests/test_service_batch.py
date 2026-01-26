@@ -74,7 +74,7 @@ def test_batch_continue_on_error(mock_drivers, devices):
     local.is_connected.return_value = False
     
     # First device fails to disconnect remote (Pull scenario)
-    remote.disconnect.side_effect = [ExecutionError("Fail"), None]
+    remote.disconnect.side_effect = [ExecutionError(["disconnect"], "Fail"), None]
     
     svc = BatchSwitchService(local, remote, devices, "target_host")
     svc.run("pull")

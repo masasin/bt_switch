@@ -9,7 +9,7 @@ from .config_service import ConfigService
 from .driver import DriverFactory
 from .exceptions import BtSwitchError, ConfigurationError
 from .models import Host
-from .service import SwitchService
+from .service import BatchSwitchService, SwitchService
 
 app = App(name="bt-switch")
 
@@ -39,7 +39,11 @@ def list_devices():
 
 @devices_app.command(name="add")
 def add_device(alias: str, mac: str, name: str):
-    """Add a new device."""
+    """
+    Add a new device.
+    
+    Alias must be unique and cannot be the same as an existing group name.
+    """
     svc = ConfigService(get_config_path())
     try:
         svc.add_device(alias, mac, name)
@@ -154,7 +158,11 @@ def list_groups():
 
 @groups_app.command(name="add")
 def add_group(alias: str, devices: list[str]):
-    """Add a new group (e.g. 'desk device1 device2')."""
+    """
+    Add a new group (e.g. 'desk device1 device2').
+    
+    Alias must be unique and cannot be the same as an existing device name.
+    """
     svc = ConfigService(get_config_path())
     try:
         svc.add_group(alias, devices)
@@ -209,11 +217,21 @@ def entry_point(
                 else:
                     logger.warning(f"Group member '{alias}' not found in devices, skipping.")
         else:
-            # Single device mode
+            # Single device mode (or fallback to group)
             device_alias = device or defaults.default_device
-            if device_alias not in config.devices:
-                raise ConfigurationError(f"Device '{device_alias}' not in [devices]")
-            devices_to_switch.append(config.devices[device_alias])
+            
+            if device_alias in config.devices:
+                devices_to_switch.append(config.devices[device_alias])
+            elif device_alias in config.groups:
+                 logger.info(f"'{device_alias}' is a group, switching all members.")
+                 member_aliases = config.groups[device_alias]
+                 for alias in member_aliases:
+                    if alias in config.devices:
+                        devices_to_switch.append(config.devices[alias])
+                    else:
+                        logger.warning(f"Group member '{alias}' not found in devices, skipping.")
+            else:
+                raise ConfigurationError(f"Device or Group '{device_alias}' not found in configuration")
 
         if not devices_to_switch:
             logger.error("No valid devices found to switch.")
@@ -238,7 +256,6 @@ def entry_point(
             is_local=False
         )
 
-        from .service import BatchSwitchService
         service = BatchSwitchService(local_driver, remote_driver, devices_to_switch, target_alias)
         service.run("switch")
 
