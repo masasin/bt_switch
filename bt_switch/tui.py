@@ -1,3 +1,4 @@
+import socket
 
 from loguru import logger
 from textual import work
@@ -41,7 +42,6 @@ class DeviceSelectorMixin:
         table.add_columns("Alias", "Name", "MAC")
         table.cursor_type = "row"
         
-        import socket
         hostname = socket.gethostname()
         defaults_map = config_service.list_defaults()
         local_defaults = defaults_map.get(hostname)
@@ -102,7 +102,6 @@ class Dashboard(Container, DeviceSelectorMixin):
         logger.add(TextualLogger(log_widget), format="{time:HH:mm:ss} | {level} | {message}")
 
     def refresh_data(self):
-        import socket
         hostname = socket.gethostname()
         defaults_map = self.config_service.list_defaults()
         local_defaults = defaults_map.get(hostname)
@@ -177,32 +176,7 @@ class Dashboard(Container, DeviceSelectorMixin):
         if event.button.id in op_map:
             self.run_switch_operation(op_map[event.button.id])
 
-class DefaultsView(Container):
-    def __init__(self, config_service: ConfigService):
-        super().__init__()
-        self.config_service = config_service
 
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label("Defaults", classes="section-title")
-            yield DataTable(id="defaults-table", cursor_type="row")
-            yield Button("Refresh", id="defaults-refresh")
-
-    def on_mount(self):
-        self.refresh_data()
-
-    def refresh_data(self):
-        table = self.query_one("#defaults-table", DataTable)
-        table.clear(columns=True)
-        table.add_columns("Hostname", "Default Device", "Default Target")
-        
-        defaults_map = self.config_service.list_defaults()
-        for host, settings in defaults_map.items():
-            table.add_row(host, settings.default_device, settings.default_target)
-
-    def on_button_pressed(self, event: Button.Pressed):
-        if event.button.id == "defaults-refresh":
-            self.refresh_data()
 
 
 class AddDeviceScreen(ModalScreen):
@@ -461,6 +435,156 @@ class HostsView(ConfigView):
                         self.notify(f"Error adding host: {e}", severity="error")
             
              self.app.push_screen(AddHostScreen(id="add-host-screen"), hande_add)
+
+
+class AddDefaultScreen(ModalScreen):
+    CSS = """
+    AddDefaultScreen {
+        align: center middle;
+    }
+    
+    #dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: auto;
+        padding: 0 1;
+        width: 60;
+        height: auto;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    
+    #title {
+        column-span: 2;
+        height: 1;
+        width: 100%;
+        content-align: center middle;
+        text-style: bold;
+    }
+    
+    Label {
+        column-span: 1;
+        height: 3;
+        content-align: right middle;
+    }
+    
+    Input, Select {
+        column-span: 1;
+        width: 100%;
+    }
+    
+    #buttons {
+        column-span: 2;
+        height: auto;
+        align: right bottom;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, config_service: ConfigService, initial_hostname: str | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.config_service = config_service
+        self.initial_hostname = initial_hostname
+
+    def compose(self) -> ComposeResult:
+        devices = self.config_service.list_devices()
+        device_options = [(f"{d.name} ({alias})", alias) for alias, d in devices.items()]
+        
+        hosts = self.config_service.list_hosts()
+        host_options = [(alias, alias) for alias in hosts.keys()]
+
+        defaults = self.config_service.list_defaults()
+        unique_hostnames = {socket.gethostname()} | set(defaults.keys())
+        hostname_options = [(h, h) for h in sorted(list(unique_hostnames))]
+
+        # Pre-select based on initial_hostname if provided, otherwise current hostname
+        default_hostname = self.initial_hostname or socket.gethostname()
+        
+        # Pre-fetch existing values if editing
+        initial_device = Select.BLANK
+        initial_target = Select.BLANK
+        if self.initial_hostname and self.initial_hostname in defaults:
+            initial_device = defaults[self.initial_hostname].default_device
+            initial_target = defaults[self.initial_hostname].default_target
+
+        yield Grid(
+            Label("Add/Edit Default Settings", id="title"),
+            Label("Hostname:"),
+            Select(hostname_options, value=default_hostname, id="select-hostname"),
+            Label("Device:"),
+            Select(device_options, value=initial_device, prompt="Choose Device", id="select-device"),
+            Label("Target:"),
+            Select(host_options, value=initial_target, prompt="Choose Target", id="select-target"),
+            Horizontal(
+                Button("Cancel", variant="error", id="btn-cancel"),
+                Button("Add/Edit", variant="success", id="btn-submit"),
+                id="buttons"
+            ),
+            id="dialog"
+        )
+    
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "btn-submit":
+            hostname = self.query_one("#select-hostname", Select).value
+            device = self.query_one("#select-device", Select).value
+            target = self.query_one("#select-target", Select).value
+            
+            if hostname != Select.BLANK and device != Select.BLANK and target != Select.BLANK:
+                self.dismiss((hostname, device, target))
+            else:
+                self.notify("All fields are required.", severity="error")
+                
+        elif event.button.id == "btn-cancel":
+            self.dismiss(None)
+
+
+class DefaultsView(ConfigView):
+    title = "Defaults"
+
+    def __init__(self, config_service: ConfigService):
+        super().__init__(config_service, "defaults")
+
+    def on_mount(self):
+        super().on_mount()
+        self.query_one("#defaults-add", Button).label = "Add/Edit"
+
+    def refresh_data(self):
+        table = self.query_one("#defaults-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("Hostname", "Default Device", "Default Target")
+        
+        defaults_map = self.config_service.list_defaults()
+        for host, settings in defaults_map.items():
+            table.add_row(host, settings.default_device, settings.default_target, key=host)
+
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "defaults-refresh":
+            self.refresh_data()
+        elif event.button.id == "defaults-remove":
+            if self.selected_row:
+                try:
+                    self.config_service.remove_default(self.selected_row)
+                    self.notify(f"Defaults for '{self.selected_row}' removed")
+                    self.refresh_data()
+                    self.selected_row = None
+                except Exception as e:
+                    self.notify(f"Error: {e}", severity="error")
+        elif event.button.id == "defaults-add":
+            def handle_add(result):
+                if result:
+                    hostname, device, target = result
+                    try:
+                        self.config_service.set_default(
+                            hostname, 
+                            default_device=device, 
+                            default_target=target
+                        )
+                        self.notify("Defaults updated")
+                        self.refresh_data()
+                    except Exception as e:
+                        self.notify(f"Error updating defaults: {e}", severity="error")
+            
+            self.app.push_screen(AddDefaultScreen(self.config_service, initial_hostname=self.selected_row), handle_add)
 
 class BtSwitchApp(App):
     CSS = """
