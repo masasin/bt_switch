@@ -25,7 +25,6 @@ from .service import SwitchService
 
 
 class TextualLogger:
-    """Redirects loguru logs to a RichLog widget."""
     def __init__(self, rich_log: RichLog):
         self.rich_log = rich_log
 
@@ -35,7 +34,42 @@ class TextualLogger:
     def flush(self):
         pass
 
-class Dashboard(Container):
+
+class DeviceSelectorMixin:
+    def _refresh_devices_table(self, table: DataTable, config_service: ConfigService) -> str | None:
+        table.clear(columns=True)
+        table.add_columns("Alias", "Name", "MAC")
+        table.cursor_type = "row"
+        
+        import socket
+        hostname = socket.gethostname()
+        defaults_map = config_service.list_defaults()
+        local_defaults = defaults_map.get(hostname)
+        default_device_alias = local_defaults.default_device if local_defaults else None
+        
+        devices = config_service.list_devices()
+        device_items = list(devices.items())
+        default_row_index = -1
+
+        for i, (alias, dev) in enumerate(device_items):
+            name_display = dev.name
+            if default_device_alias and default_device_alias == alias:
+                name_display = f"{dev.name} [bold green](Default)[/]"
+                default_row_index = i
+            
+            table.add_row(alias, name_display, dev.mac, key=alias)
+
+        if default_row_index != -1:
+            table.move_cursor(row=default_row_index)
+            return default_device_alias
+        
+        if device_items:
+            return device_items[0][0]
+
+        return None
+
+
+class Dashboard(Container, DeviceSelectorMixin):
     def __init__(self, config_service: ConfigService):
         super().__init__()
         self.config_service = config_service
@@ -63,33 +97,19 @@ class Dashboard(Container):
     def on_mount(self):
         self.refresh_data()
         
-        # Setup logging
         log_widget = self.query_one("#logs", RichLog)
         logger.remove()
         logger.add(TextualLogger(log_widget), format="{time:HH:mm:ss} | {level} | {message}")
 
     def refresh_data(self):
-        # Determine defaults
         import socket
         hostname = socket.gethostname()
         defaults_map = self.config_service.list_defaults()
         local_defaults = defaults_map.get(hostname)
 
-        # Refresh Devices
         table = self.query_one("#dashboard-devices", DataTable)
-        table.clear(columns=True)
-        table.add_columns("Alias", "Name", "MAC")
-        table.cursor_type = "row"
-        
-        devices = self.config_service.list_devices()
-        for alias, dev in devices.items():
-            name_display = dev.name
-            if local_defaults and local_defaults.default_device == alias:
-                name_display = f"{dev.name} [bold green](Default)[/]"
-            
-            table.add_row(alias, name_display, dev.mac, key=alias)
+        self.selected_device = self._refresh_devices_table(table, self.config_service)
 
-        # Refresh Hosts
         select = self.query_one("#target-select", Select)
         hosts = self.config_service.list_hosts()
         options = [(f"{alias} ({h.address})", alias) for alias, h in hosts.items()]
@@ -97,8 +117,6 @@ class Dashboard(Container):
         
         if local_defaults and local_defaults.default_target:
              select.value = local_defaults.default_target
-
-        # Refresh Defaults Tab (Moved to DefaultsView)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         if event.data_table.id == "dashboard-devices":
@@ -112,9 +130,7 @@ class Dashboard(Container):
         if not self.selected_device:
             self.query_one("#logs", RichLog).write("[bold red]No device selected![/]")
             return
-        if not self.selected_target and operation != "pull": # Pull might not strictly need target if we infer "remote"
-             # But our service structure requires a remote driver. 
-             # For pull, the 'target' is where we are pulling FROM.
+        if not self.selected_target and operation != "pull":
              pass
 
         if not self.selected_target:
@@ -126,11 +142,7 @@ class Dashboard(Container):
         try:
             log.write(f"[bold blue]Starting {operation.upper()}...[/]")
             
-            # Re-instantiate everything to ensure fresh state/config 
-            # (though in a real app better to reuse or manage lifecycle)
-            config = self.config_service._load() # Determine if we need to reload. 
-            # Actually ConfigService reads file on every call in current impl, 
-            # but we need the objects.
+            config = self.config_service._load()
             
             device_obj = config.devices[self.selected_device]
             remote_host_cfg = config.hosts[self.selected_target]
@@ -168,7 +180,6 @@ class Dashboard(Container):
             self.run_switch_operation(op_map[event.button.id])
 
 class DefaultsView(Container):
-    """View for managing default settings."""
     def __init__(self, config_service: ConfigService):
         super().__init__()
         self.config_service = config_service
@@ -197,8 +208,6 @@ class DefaultsView(Container):
 
 
 class AddDeviceScreen(ModalScreen):
-    """Screen for adding a new device."""
-    
     CSS = """
     AddDeviceScreen {
         align: center middle;
@@ -225,7 +234,7 @@ class AddDeviceScreen(ModalScreen):
     
     Label {
         column-span: 1;
-        height: 3; # Align with Input height
+        height: 3;
         content-align: right middle;
     }
     
@@ -274,8 +283,6 @@ class AddDeviceScreen(ModalScreen):
             self.dismiss(None)
 
 class AddHostScreen(ModalScreen):
-    """Screen for adding a new host."""
-    
     CSS = """
     AddHostScreen {
         align: center middle;
@@ -352,7 +359,6 @@ class AddHostScreen(ModalScreen):
 
 
 class ConfigView(Container):
-    """Base class for config items with Add/Remove buttons."""
     def __init__(self, config_service: ConfigService, id_prefix: str):
         super().__init__()
         self.config_service = config_service
@@ -360,7 +366,6 @@ class ConfigView(Container):
         self.selected_row = None
 
     def compose_content(self) -> ComposeResult:
-        """Override to provide table columns."""
         yield Label("Table Base")
 
     def compose(self) -> ComposeResult:
@@ -381,9 +386,10 @@ class ConfigView(Container):
         pass
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
-        self.selected_row = event.row_key.value
+        if event.data_table.id == f"{self.id_prefix}-table":
+            self.selected_row = event.row_key.value
 
-class DevicesView(ConfigView):
+class DevicesView(ConfigView, DeviceSelectorMixin):
     title = "Devices"
 
     def __init__(self, config_service: ConfigService):
@@ -391,12 +397,7 @@ class DevicesView(ConfigView):
 
     def refresh_data(self):
         table = self.query_one("#devices-table", DataTable)
-        table.clear(columns=True)
-        table.add_columns("Alias", "MAC", "Name")
-        
-        devices = self.config_service.list_devices()
-        for alias, dev in devices.items():
-            table.add_row(alias, dev.mac, dev.name, key=alias)
+        self.selected_row = self._refresh_devices_table(table, self.config_service)
 
     def on_button_pressed(self, event: Button.Pressed):
         if event.button.id == "devices-refresh":
