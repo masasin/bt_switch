@@ -39,6 +39,39 @@ class ConfigService:
             current = current[key]
         return current
 
+    # --- Groups ---
+
+    def list_groups(self) -> dict[str, list[str]]:
+        doc = self._load_document()
+        groups_table = doc.get("groups", {})
+        # Convert to standard dict to match AppConfig model
+        return {k: [str(i) for i in v] for k, v in groups_table.items()}
+
+    def add_group(self, alias: str, device_aliases: list[str]) -> None:
+        doc = self._load_document()
+        
+        # Validation: check device aliases exist
+        devices = doc.get("devices", {})
+        for dev_alias in device_aliases:
+            if dev_alias not in devices:
+                raise ConfigurationError(f"Device '{dev_alias}' not found in configuration")
+
+        groups = self._ensure_table(doc, "groups")
+        if alias in groups:
+             raise ConfigurationError(f"Group '{alias}' already exists")
+
+        groups[alias] = device_aliases
+        self._save_document(doc)
+
+    def remove_group(self, alias: str) -> None:
+        doc = self._load_document()
+        groups = doc.get("groups")
+        if not groups or alias not in groups:
+             raise ConfigurationError(f"Group '{alias}' not found")
+        
+        del groups[alias]
+        self._save_document(doc)
+
     # --- Devices ---
 
     def list_devices(self) -> dict[str, Device]:

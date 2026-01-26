@@ -19,6 +19,8 @@ defaults_app = App(name="defaults", help="Manage default settings.")
 
 app.command(devices_app)
 app.command(hosts_app)
+groups_app = App(name="groups", help="Manage device groups.")
+app.command(groups_app)
 app.command(defaults_app)
 
 @devices_app.command(name="list")
@@ -136,9 +138,54 @@ def remove_default(hostname: str):
         sys.exit(1)
 
 
-@app.default
-def entry_point(target: str | None = None, device: str | None = None):
+@groups_app.command(name="list")
+def list_groups():
+    """List configured groups."""
+    svc = ConfigService(get_config_path())
+    groups = svc.list_groups()
+    if not groups:
+        print("No groups configured.")
+        return
+    
+    print(f"{'ALIAS':<15} {'DEVICES'}")
+    print("-" * 50)
+    for alias, members in groups.items():
+        print(f"{alias:<15} {', '.join(members)}")
+
+@groups_app.command(name="add")
+def add_group(alias: str, devices: list[str]):
+    """Add a new group (e.g. 'desk device1 device2')."""
+    svc = ConfigService(get_config_path())
     try:
+        svc.add_group(alias, devices)
+        print(f"Group '{alias}' added with {len(devices)} devices.")
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+@groups_app.command(name="remove")
+def remove_group(alias: str):
+    """Remove a group."""
+    svc = ConfigService(get_config_path())
+    try:
+        svc.remove_group(alias)
+        print(f"Group '{alias}' removed.")
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+@app.default
+def entry_point(
+    target: str | None = None, 
+    device: str | None = None,
+    group: str | None = None,
+):
+    try:
+        if device and group:
+            print("Error: Cannot specify both --device and --group.")
+            sys.exit(1)
+
         config = load_config()
         hostname = socket.gethostname()
 
@@ -147,20 +194,38 @@ def entry_point(target: str | None = None, device: str | None = None):
         
         defaults = config.defaults[hostname]
         target_alias = target or defaults.default_target
-        device_alias = device or defaults.default_device
+        
+        # Determine devices to switch
+        devices_to_switch = []
+        
+        if group:
+            if group not in config.groups:
+                 raise ConfigurationError(f"Group '{group}' not found")
+            
+            member_aliases = config.groups[group]
+            for alias in member_aliases:
+                if alias in config.devices:
+                    devices_to_switch.append(config.devices[alias])
+                else:
+                    logger.warning(f"Group member '{alias}' not found in devices, skipping.")
+        else:
+            # Single device mode
+            device_alias = device or defaults.default_device
+            if device_alias not in config.devices:
+                raise ConfigurationError(f"Device '{device_alias}' not in [devices]")
+            devices_to_switch.append(config.devices[device_alias])
+
+        if not devices_to_switch:
+            logger.error("No valid devices found to switch.")
+            return
 
         if target_alias not in config.hosts:
             raise ConfigurationError(f"Target '{target_alias}' not in [hosts]")
-        if device_alias not in config.devices:
-            raise ConfigurationError(f"Device '{device_alias}' not in [devices]")
-
-        device_obj = config.devices[device_alias]
+        
         remote_host_cfg = config.hosts[target_alias]
         
         # Self-targeting check
         if remote_host_cfg.address == hostname: 
-             # Logic could support switching between adapters on same host, 
-             # but for now we treat 'target=self' as invalid or no-op
              logger.warning("Target is localhost. Nothing to switch.")
              return
 
@@ -173,8 +238,9 @@ def entry_point(target: str | None = None, device: str | None = None):
             is_local=False
         )
 
-        service = SwitchService(local_driver, remote_driver, device_obj, target_alias)
-        service.run()
+        from .service import BatchSwitchService
+        service = BatchSwitchService(local_driver, remote_driver, devices_to_switch, target_alias)
+        service.run("switch")
 
     except BtSwitchError as e:
         logger.error(str(e))

@@ -22,7 +22,7 @@ from .config import get_config_path
 from .config_service import ConfigService
 from .driver import DriverFactory
 from .models import Host
-from .service import SwitchService
+from .service import BatchSwitchService, SwitchService
 
 
 class TextualLogger:
@@ -75,12 +75,17 @@ class Dashboard(Container, DeviceSelectorMixin):
         self.config_service = config_service
         self.selected_target = None
         self.selected_device = None
+        self.selected_group = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="controls"):
             with Vertical(classes="column"):
                 yield Label("Devices", classes="section-title")
                 yield DataTable(id="dashboard-devices")
+            
+            with Vertical(classes="column"):
+                yield Label("Groups", classes="section-title")
+                yield Select([], id="dashboard-groups", prompt="Select Group (Optional)")
             
             with Vertical(classes="column"):
                 yield Label("Target Host", classes="section-title")
@@ -106,9 +111,19 @@ class Dashboard(Container, DeviceSelectorMixin):
         defaults_map = self.config_service.list_defaults()
         local_defaults = defaults_map.get(hostname)
 
+        # Refresh Devices
         table = self.query_one("#dashboard-devices", DataTable)
         self.selected_device = self._refresh_devices_table(table, self.config_service)
 
+        # Refresh Groups
+        group_select = self.query_one("#dashboard-groups", Select)
+        groups = self.config_service.list_groups()
+        group_options = [(f"{alias} ({len(members)} devices)", alias) for alias, members in groups.items()]
+        group_options.insert(0, ("(None)", "")) 
+        group_select.set_options(group_options)
+        group_select.value = "" 
+
+        # Refresh Hosts
         select = self.query_one("#target-select", Select)
         hosts = self.config_service.list_hosts()
         options = [(f"{alias} ({h.address})", alias) for alias, h in hosts.items()]
@@ -120,16 +135,28 @@ class Dashboard(Container, DeviceSelectorMixin):
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         if event.data_table.id == "dashboard-devices":
             self.selected_device = event.row_key.value
+            # Deselect group if device selected
+            self.query_one("#dashboard-groups", Select).value = ""
+            self.selected_group = None
 
     def on_select_changed(self, event: Select.Changed):
-        self.selected_target = event.value
+        if event.select.id == "target-select":
+            self.selected_target = event.value
+        elif event.select.id == "dashboard-groups":
+            val = event.value
+            if val:
+                self.selected_group = val
+                self.selected_device = None
+                self.app.notify(f"Group '{val}' selected")
+            else:
+                self.selected_group = None
 
     @work(exclusive=True, thread=True)
     def run_switch_operation(self, operation: str):
         log = self.query_one("#logs", RichLog)
 
-        if not self.selected_device:
-            self.app.call_from_thread(log.write, "[bold red]No device selected![/]")
+        if not self.selected_device and not self.selected_group:
+            self.app.call_from_thread(log.write, "[bold red]No device or group selected![/]")
             return
         
         if not self.selected_target:
@@ -137,13 +164,12 @@ class Dashboard(Container, DeviceSelectorMixin):
             return
             
         try:
-            self.app.call_from_thread(log.write, f"[bold blue]Starting {operation.upper()}...[/]")
+            target_str = self.selected_target
             
             config = self.config_service.load()
+            remote_host_cfg = config.hosts[target_str]
             
-            device_obj = config.devices[self.selected_device]
-            remote_host_cfg = config.hosts[self.selected_target]
-            
+            # Setup Drivers
             local_driver = DriverFactory.create(
                 Host(address="localhost", user="", protocol="local", driver_type="bluez"), 
                 is_local=True
@@ -152,21 +178,40 @@ class Dashboard(Container, DeviceSelectorMixin):
                 remote_host_cfg, 
                 is_local=False
             )
-            
-            service = SwitchService(local_driver, remote_driver, device_obj, self.selected_target)
-            
-            if operation == "switch":
-                service.run()
-            elif operation == "push":
-                service._handle_push()
-            elif operation == "pull":
-                service._handle_pull()
+
+            # Determine Mode (Group vs Single)
+            if self.selected_group:
+                group_alias = self.selected_group
+                self.app.call_from_thread(log.write, f"[bold blue]Starting GROUP {operation.upper()} on '{group_alias}'...[/]")
                 
+                device_aliases = config.groups[group_alias]
+                devices = []
+                for da in device_aliases:
+                    if da in config.devices:
+                        devices.append(config.devices[da])
+                
+                service = BatchSwitchService(local_driver, remote_driver, devices, target_str)
+                service.run(operation)
+                
+            else:
+                # Single Device
+                device_alias = self.selected_device
+                self.app.call_from_thread(log.write, f"[bold blue]Starting {operation.upper()} on '{device_alias}'...[/]")
+                device_obj = config.devices[device_alias]
+                service = SwitchService(local_driver, remote_driver, device_obj, target_str)
+                
+                if operation == "switch":
+                    service.run()
+                elif operation == "push":
+                    service._handle_push()
+                elif operation == "pull":
+                    service._handle_pull()
+
             self.app.call_from_thread(log.write, f"[bold green]{operation.upper()} Complete![/]")
             
         except Exception as e:
             self.app.call_from_thread(log.write, f"[bold red]Error: {e}[/]")
-            
+
     def on_button_pressed(self, event: Button.Pressed):
         op_map = {
             "btn-switch": "switch",
@@ -175,160 +220,6 @@ class Dashboard(Container, DeviceSelectorMixin):
         }
         if event.button.id in op_map:
             self.run_switch_operation(op_map[event.button.id])
-
-
-
-
-class AddDeviceScreen(ModalScreen):
-    CSS = """
-    AddDeviceScreen {
-        align: center middle;
-    }
-    
-    #dialog {
-        grid-size: 2;
-        grid-gutter: 1 2;
-        grid-rows: auto;
-        padding: 0 1;
-        width: 60;
-        height: auto;
-        border: thick $background 80%;
-        background: $surface;
-    }
-    
-    #title {
-        column-span: 2;
-        height: 1;
-        width: 100%;
-        content-align: center middle;
-        text-style: bold;
-    }
-    
-    Label {
-        column-span: 1;
-        height: 3;
-        content-align: right middle;
-    }
-    
-    Input {
-        column-span: 1;
-        width: 100%;
-    }
-    
-    #buttons {
-        column-span: 2;
-        height: auto;
-        align: right bottom;
-        margin-top: 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Grid(
-            Label("Add Device", id="title"),
-            Label("Alias:"),
-            Input(placeholder="e.g. headphones", id="input-alias"),
-            Label("MAC:"),
-            Input(placeholder="00:11:22:33:44:55", id="input-mac"),
-            Label("Name:"),
-            Input(placeholder="Friendly Name", id="input-name"),
-            Horizontal(
-                Button("Cancel", variant="error", id="btn-cancel"),
-                Button("Add", variant="success", id="btn-submit"),
-                id="buttons"
-            ),
-            id="dialog"
-        )
-    
-    def on_button_pressed(self, event: Button.Pressed):
-        if event.button.id == "btn-submit":
-            alias = self.query_one("#input-alias", Input).value
-            mac = self.query_one("#input-mac", Input).value
-            name = self.query_one("#input-name", Input).value
-            
-            if alias and mac and name:
-                self.dismiss((alias, mac, name))
-            else:
-                self.notify("All fields are required.", severity="error")
-                
-        elif event.button.id == "btn-cancel":
-            self.dismiss(None)
-
-class AddHostScreen(ModalScreen):
-    CSS = """
-    AddHostScreen {
-        align: center middle;
-    }
-    
-    #dialog {
-        grid-size: 2;
-        grid-gutter: 1 2;
-        grid-rows: auto;
-        padding: 0 1;
-        width: 60;
-        height: auto;
-        border: thick $background 80%;
-        background: $surface;
-    }
-    
-    #title {
-        column-span: 2;
-        height: 1;
-        width: 100%;
-        content-align: center middle;
-        text-style: bold;
-    }
-    
-    Label {
-        column-span: 1;
-        height: 3;
-        content-align: right middle;
-    }
-    
-    Input {
-        column-span: 1;
-        width: 100%;
-    }
-    
-    #buttons {
-        column-span: 2;
-        height: auto;
-        align: right bottom;
-        margin-top: 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Grid(
-            Label("Add Host", id="title"),
-            Label("Alias:"),
-            Input(placeholder="e.g. desktop", id="input-alias"),
-            Label("Address:"),
-            Input(placeholder="Hostname or IP", id="input-address"),
-            Label("User:"),
-            Input(placeholder="Username", id="input-user"),
-            Horizontal(
-                Button("Cancel", variant="error", id="btn-cancel"),
-                Button("Add", variant="success", id="btn-submit"),
-                id="buttons"
-            ),
-            id="dialog"
-        )
-    
-    def on_button_pressed(self, event: Button.Pressed):
-        if event.button.id == "btn-submit":
-            alias = self.query_one("#input-alias", Input).value
-            address = self.query_one("#input-address", Input).value
-            user = self.query_one("#input-user", Input).value
-            
-            if alias and address and user:
-                self.dismiss((alias, address, user))
-            else:
-                self.notify("All fields are required.", severity="error")
-                
-        elif event.button.id == "btn-cancel":
-            self.dismiss(None)
-
 
 class ConfigView(Container):
     def __init__(self, config_service: ConfigService, id_prefix: str):
@@ -586,6 +477,127 @@ class DefaultsView(ConfigView):
             
             self.app.push_screen(AddDefaultScreen(self.config_service, initial_hostname=self.selected_row), handle_add)
 
+class AddGroupScreen(ModalScreen):
+    CSS = """
+    AddGroupScreen {
+        align: center middle;
+    }
+    
+    #dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: auto;
+        padding: 0 1;
+        width: 60;
+        height: auto;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    
+    #title {
+        column-span: 2;
+        height: 1;
+        width: 100%;
+        content-align: center middle;
+        text-style: bold;
+    }
+    
+    Label {
+        column-span: 1;
+        height: 3;
+        content-align: right middle;
+    }
+    
+    Input, Select {
+        column-span: 1;
+        width: 100%;
+    }
+    
+    #buttons {
+        column-span: 2;
+        height: auto;
+        align: right bottom;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, config_service: ConfigService, **kwargs):
+        super().__init__(**kwargs)
+        self.config_service = config_service
+
+    def compose(self) -> ComposeResult:
+        devices = self.config_service.list_devices()
+        # Simple text input for now, as TUI multi-select is complex without custom widgets
+        # User enters comma-separated aliases
+        
+        yield Grid(
+            Label("Add Group", id="title"),
+            Label("Group Alias:"),
+            Input(placeholder="e.g. desk", id="input-alias"),
+            Label("Devices:"),
+            Input(placeholder="dev1, dev2 (comma separated aliases)", id="input-devices"),
+            Horizontal(
+                Button("Cancel", variant="error", id="btn-cancel"),
+                Button("Add", variant="success", id="btn-submit"),
+                id="buttons"
+            ),
+            id="dialog"
+        )
+    
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "btn-submit":
+            alias = self.query_one("#input-alias", Input).value
+            devices_str = self.query_one("#input-devices", Input).value
+            
+            if alias and devices_str:
+                device_list = [d.strip() for d in devices_str.split(",") if d.strip()]
+                self.dismiss((alias, device_list))
+            else:
+                self.notify("All fields are required.", severity="error")
+                
+        elif event.button.id == "btn-cancel":
+            self.dismiss(None)
+
+class GroupsView(ConfigView):
+    title = "Groups"
+
+    def __init__(self, config_service: ConfigService):
+        super().__init__(config_service, "groups")
+
+    def refresh_data(self):
+        table = self.query_one("#groups-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("Alias", "Devices")
+        
+        groups = self.config_service.list_groups()
+        for alias, members in groups.items():
+            table.add_row(alias, ", ".join(members), key=alias)
+
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "groups-refresh":
+            self.refresh_data()
+        elif event.button.id == "groups-remove":
+            if self.selected_row:
+                try:
+                    self.config_service.remove_group(self.selected_row)
+                    self.notify(f"Group '{self.selected_row}' removed")
+                    self.refresh_data()
+                    self.selected_row = None
+                except Exception as e:
+                    self.notify(f"Error: {e}", severity="error")
+        elif event.button.id == "groups-add":
+            def handle_add(result):
+                if result:
+                    alias, devices = result
+                    try:
+                        self.config_service.add_group(alias, devices)
+                        self.notify(f"Group '{alias}' added")
+                        self.refresh_data()
+                    except Exception as e:
+                        self.notify(f"Error adding group: {e}", severity="error")
+            
+            self.app.push_screen(AddGroupScreen(self.config_service), handle_add)
+
 class BtSwitchApp(App):
     CSS = """
     Screen {
@@ -643,6 +655,9 @@ class BtSwitchApp(App):
 
             with TabPane("Defaults", id="tab-defaults"):
                  yield DefaultsView(self.config_service)
+
+            with TabPane("Groups", id="tab-groups"):
+                 yield GroupsView(self.config_service)
 
         yield Footer()
 

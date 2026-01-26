@@ -20,4 +20,5 @@ class DefaultSettings(BaseModel):
 class AppConfig(BaseModel):
     devices: dict[str, Device]
     hosts: dict[str, Host]
+    groups: dict[str, list[str]] = {}
     defaults: dict[str, DefaultSettings]
