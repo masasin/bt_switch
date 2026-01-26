@@ -2,6 +2,8 @@
 from loguru import logger
 from textual import work
 from textual.app import App, ComposeResult
+from textual.containers import Container, Grid, Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -14,8 +16,6 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
-from textual.screen import ModalScreen, Screen
-from textual.containers import Container, Horizontal, Vertical, Grid
 
 from .config import get_config_path
 from .config_service import ConfigService
@@ -127,22 +127,20 @@ class Dashboard(Container, DeviceSelectorMixin):
 
     @work(exclusive=True, thread=True)
     def run_switch_operation(self, operation: str):
-        if not self.selected_device:
-            self.query_one("#logs", RichLog).write("[bold red]No device selected![/]")
-            return
-        if not self.selected_target and operation != "pull":
-             pass
-
-        if not self.selected_target:
-             self.query_one("#logs", RichLog).write("[bold red]No target host selected![/]")
-             return
-             
         log = self.query_one("#logs", RichLog)
+
+        if not self.selected_device:
+            self.app.call_from_thread(log.write, "[bold red]No device selected![/]")
+            return
         
-        try:
-            log.write(f"[bold blue]Starting {operation.upper()}...[/]")
+        if not self.selected_target:
+            self.app.call_from_thread(log.write, "[bold red]No target host selected![/]")
+            return
             
-            config = self.config_service._load()
+        try:
+            self.app.call_from_thread(log.write, f"[bold blue]Starting {operation.upper()}...[/]")
+            
+            config = self.config_service.load()
             
             device_obj = config.devices[self.selected_device]
             remote_host_cfg = config.hosts[self.selected_target]
@@ -165,10 +163,10 @@ class Dashboard(Container, DeviceSelectorMixin):
             elif operation == "pull":
                 service._handle_pull()
                 
-            log.write(f"[bold green]{operation.upper()} Complete![/]")
+            self.app.call_from_thread(log.write, f"[bold green]{operation.upper()} Complete![/]")
             
         except Exception as e:
-            log.write(f"[bold red]Error: {e}[/]")
+            self.app.call_from_thread(log.write, f"[bold red]Error: {e}[/]")
             
     def on_button_pressed(self, event: Button.Pressed):
         op_map = {

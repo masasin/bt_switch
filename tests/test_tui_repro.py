@@ -1,6 +1,7 @@
 import pytest
-from textual.app import App
-from bt_switch.tui import BtSwitchApp, Dashboard, DefaultsView
+
+from bt_switch.tui import BtSwitchApp
+
 
 @pytest.mark.asyncio
 async def test_app_crash_repro():

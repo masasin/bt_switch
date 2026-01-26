@@ -1,7 +1,9 @@
+from unittest.mock import MagicMock, Mock
+
 import pytest
 from textual.app import App
-from bt_switch.tui import BtSwitchApp, DevicesView, HostsView, Dashboard
-from unittest.mock import MagicMock, Mock
+
+from bt_switch.tui import BtSwitchApp, Dashboard, DevicesView, HostsView
 
 
 @pytest.fixture
@@ -56,7 +58,7 @@ def mock_config_service_with_defaults(mocker):
 async def test_devices_view_compose(mock_config_service):
     view = DevicesView(mock_config_service)
     app = App()
-    async with app.run_test() as pilot:
+    async with app.run_test():
         await app.mount(view)
         assert app.query_one("DevicesView")
         assert app.query_one("#devices-table")
@@ -67,7 +69,7 @@ async def test_devices_view_compose(mock_config_service):
 async def test_hosts_view_compose(mock_config_service):
     view = HostsView(mock_config_service)
     app = App()
-    async with app.run_test() as pilot:
+    async with app.run_test():
         await app.mount(view)
         assert app.query_one("HostsView")
         assert app.query_one("#hosts-table")
@@ -106,7 +108,7 @@ async def test_default_device_selected_on_load(mock_config_service_with_defaults
     app = BtSwitchApp()
     app.config_service = mock_config_service_with_defaults
     
-    async with app.run_test() as pilot:
+    async with app.run_test():
         dashboard = app.query_one(Dashboard)
         devices_table = dashboard.query_one("#dashboard-devices")
         

@@ -5,12 +5,16 @@ import tomlkit
 from tomlkit.toml_document import TOMLDocument
 
 from .exceptions import ConfigurationError
-from .models import DefaultSettings, Device, Host
+from .models import AppConfig, DefaultSettings, Device, Host
 
 
 class ConfigService:
     def __init__(self, config_path: Path):
         self.config_path = config_path
+
+    def load(self) -> AppConfig:
+        doc = self._load_document()
+        return AppConfig.model_validate(doc)
 
     def _load_document(self) -> TOMLDocument:
         if not self.config_path.exists():
